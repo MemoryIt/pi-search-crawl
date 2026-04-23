@@ -1,0 +1,9 @@
+{
+  "name": "pi-search-crawl",
+  "version": "0.1.0",
+  "description": "Search and crawl extension for pi-coding-agent",
+  "main": "index.ts",
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
