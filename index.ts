@@ -65,7 +65,7 @@ interface SearchParams {
 // Constants
 // ============================================================
 
-const SEARXNG_URL = process.env.SEARXNG_URL ?? "http://host.docker.internal:8080";
+const SEARXNG_URL = process.env.SEARXNG_URL ?? "http://localhost:8080";
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 20;
 
