@@ -55,25 +55,40 @@ describe("Config System", () => {
 
   describe("resolveApiKey", () => {
     it("should return plain key as-is", () => {
-      expect(resolveApiKey("sk-test-key")).toBe("sk-test-key");
+      const result = resolveApiKey("sk-test-key");
+      expect(result).toBe("sk-test-key");
+      expect(result).not.toBe("");
     });
 
-    it("should resolve ${ENV_VAR} syntax", () => {
+    it("should resolve ${ENV_VAR} syntax when key is exactly the pattern", () => {
       process.env.TEST_API_KEY = "resolved-key";
       try {
-        expect(resolveApiKey("${TEST_API_KEY}")).toBe("resolved-key");
+        const result = resolveApiKey("${TEST_API_KEY}");
+        expect(result).toBe("resolved-key");
       } finally {
         delete process.env.TEST_API_KEY;
       }
     });
 
     it("should return empty string for missing env var", () => {
-      expect(resolveApiKey("${NON_EXISTENT_VAR}")).toBe("");
+      const result = resolveApiKey("${NON_EXISTENT_VAR}");
+      expect(result).toBe("");
     });
 
-    it("should handle partial env var syntax gracefully", () => {
-      // 只有完全匹配的 ${VAR} 才会被解析
-      expect(resolveApiKey("Bearer ${MY_KEY}")).toBe("Bearer ${MY_KEY}");
+    it("should NOT resolve partial env var syntax", () => {
+      // 只有完全匹配 ^${VAR}$ 才会被解析
+      const result = resolveApiKey("Bearer ${MY_KEY}");
+      expect(result).toBe("Bearer ${MY_KEY}");
+    });
+    
+    it("should handle empty string key", () => {
+      const result = resolveApiKey("");
+      expect(result).toBe("");
+    });
+    
+    it("should handle whitespace only key", () => {
+      const result = resolveApiKey("   ");
+      expect(result).toBe("   ");
     });
   });
 
@@ -130,7 +145,7 @@ describe("Config System", () => {
   });
 
   describe("validateConfig", () => {
-    it("should pass for valid minimal config", () => {
+    it("should pass for valid minimal config with raw mode", () => {
       const config = {
         ...DEFAULT_CONFIG,
         crawl: { mode: "raw" },
@@ -138,9 +153,12 @@ describe("Config System", () => {
       };
       const errors = validateConfig(config);
       expect(errors).toHaveLength(0);
+      
+      // 验证返回的是空数组实例，不是 undefined
+      expect(Array.isArray(errors)).toBe(true);
     });
 
-    it("should pass for valid config with clean mode and LLM", () => {
+    it("should pass for valid config with clean mode and clean LLM", () => {
       const config = {
         ...DEFAULT_CONFIG,
         crawl: { mode: "clean" },
@@ -159,7 +177,7 @@ describe("Config System", () => {
       expect(errors).toHaveLength(0);
     });
 
-    it("should fail for summary mode without summary LLM", () => {
+    it("should fail for summary mode without summary LLM - with specific error message", () => {
       const config = {
         ...DEFAULT_CONFIG,
         crawl: { mode: "summary" },
@@ -175,20 +193,34 @@ describe("Config System", () => {
         storage: { cacheDir: "/tmp/cache" },
       };
       const errors = validateConfig(config);
-      expect(errors.some(e => e.path === "crawl.mode")).toBe(true);
+      
+      // 验证存在错误
+      expect(errors.length).toBeGreaterThan(0);
+      
+      // 验证错误的路径和消息内容
+      const modeError = errors.find(e => e.path === "crawl.mode");
+      expect(modeError).toBeDefined();
+      expect(modeError?.message).toContain("summary");
+      expect(modeError?.message).toContain("llm.summary");
     });
 
-    it("should fail for clean mode without clean LLM", () => {
+    it("should fail for clean mode without clean LLM - with specific error message", () => {
       const config = {
         ...DEFAULT_CONFIG,
         crawl: { mode: "clean" },
         storage: { cacheDir: "/tmp/cache" },
       };
       const errors = validateConfig(config);
-      expect(errors.some(e => e.path === "crawl.mode")).toBe(true);
+      
+      expect(errors.length).toBeGreaterThan(0);
+      
+      const modeError = errors.find(e => e.path === "crawl.mode");
+      expect(modeError).toBeDefined();
+      expect(modeError?.message).toContain("clean");
+      expect(modeError?.message).toContain("llm.clean");
     });
 
-    it("should validate LLM config fields", () => {
+    it("should validate LLM config fields and return specific errors", () => {
       const config = {
         ...DEFAULT_CONFIG,
         crawl: { mode: "raw" },
@@ -204,14 +236,25 @@ describe("Config System", () => {
         storage: { cacheDir: "/tmp/cache" },
       };
       const errors = validateConfig(config);
-      expect(errors.length).toBeGreaterThan(0);
-      expect(errors.some(e => e.path.includes("baseUrl"))).toBe(true);
-      expect(errors.some(e => e.path.includes("endpointType"))).toBe(true);
-      expect(errors.some(e => e.path.includes("modelName"))).toBe(true);
-      expect(errors.some(e => e.path.includes("systemPrompt"))).toBe(true);
+      
+      // 验证返回了特定数量的错误
+      expect(errors.length).toBeGreaterThanOrEqual(4);
+      
+      // 验证每个错误都有正确的路径和消息
+      const baseUrlError = errors.find(e => e.path.includes("baseUrl"));
+      expect(baseUrlError?.message).toBe("baseUrl is required");
+      
+      const endpointError = errors.find(e => e.path.includes("endpointType"));
+      expect(endpointError?.message).toContain("openai");
+      
+      const modelNameError = errors.find(e => e.path.includes("modelName"));
+      expect(modelNameError?.message).toBe("modelName is required");
+      
+      const systemPromptError = errors.find(e => e.path.includes("systemPrompt"));
+      expect(systemPromptError).toBeDefined();
     });
 
-    it("should fail for invalid errorMode", () => {
+    it("should fail for invalid errorMode value", () => {
       const config = {
         ...DEFAULT_CONFIG,
         crawl: { mode: "raw" },
@@ -219,10 +262,13 @@ describe("Config System", () => {
         errorMode: "invalid" as any,
       };
       const errors = validateConfig(config);
-      expect(errors.some(e => e.path === "errorMode")).toBe(true);
+      
+      const errorModeError = errors.find(e => e.path === "errorMode");
+      expect(errorModeError).toBeDefined();
+      expect(errorModeError?.message).toContain("strict");
     });
 
-    it("should pass for summary mode with both LLMs", () => {
+    it("should pass for summary mode with both LLMs configured", () => {
       const config = {
         ...DEFAULT_CONFIG,
         crawl: { mode: "summary" },
@@ -240,6 +286,38 @@ describe("Config System", () => {
             apiKey: "test-key",
             modelName: "summary-model",
             systemPrompt: { type: "string", value: "Summary prompt" },
+          },
+        },
+        storage: { cacheDir: "/tmp/cache" },
+      };
+      const errors = validateConfig(config);
+      expect(errors).toHaveLength(0);
+    });
+    
+    it("should fail when storage.cacheDir is missing", () => {
+      const config = {
+        ...DEFAULT_CONFIG,
+        crawl: { mode: "raw" },
+        storage: { cacheDir: "" } as any,
+      };
+      const errors = validateConfig(config);
+      
+      const cacheDirError = errors.find(e => e.path === "storage.cacheDir");
+      expect(cacheDirError).toBeDefined();
+      expect(cacheDirError?.message).toBe("storage.cacheDir is required");
+    });
+    
+    it("should validate anthropic endpoint type", () => {
+      const config = {
+        ...DEFAULT_CONFIG,
+        crawl: { mode: "raw" },
+        llm: {
+          clean: {
+            baseUrl: "https://api.anthropic.com",
+            endpointType: "anthropic" as const,
+            apiKey: "sk-ant",
+            modelName: "claude-3",
+            systemPrompt: { type: "string", value: "You are Claude." },
           },
         },
         storage: { cacheDir: "/tmp/cache" },
