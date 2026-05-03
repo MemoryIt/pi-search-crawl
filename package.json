@@ -4,6 +4,12 @@
   "description": "Search and crawl extension for pi-coding-agent",
   "main": "index.ts",
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "vitest": "^4.1.5"
   }
 }
