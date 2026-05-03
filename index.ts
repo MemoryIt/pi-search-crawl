@@ -1,5 +1,14 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { loadConfig } from "./config";
+
+// ============================================================
+// Config (loaded from config.json, with env override)
+// ============================================================
+
+const config = loadConfig();
+const SEARXNG_URL = config.services.searxng.url;
+const CRAWL4AI_URL = config.services.crawl4ai.url;
 
 // ============================================================
 // Crawl4AI Types (for fetch_web_page)
@@ -16,10 +25,8 @@ interface Crawl4AIResponse {
 }
 
 // ============================================================
-// Crawl4AI Constants
+// Constants
 // ============================================================
-
-const CRAWL4AI_URL = process.env.CRAWL4AI_URL ?? "http://localhost:11235";
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
 
@@ -62,10 +69,9 @@ interface SearchParams {
 }
 
 // ============================================================
-// Constants
+// Constants (search-specific)
 // ============================================================
 
-const SEARXNG_URL = process.env.SEARXNG_URL ?? "http://localhost:8080";
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 20;
 
