@@ -9,6 +9,17 @@ import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
+// getAgentDir is optional - only available in pi-coding-agent runtime
+export function getAgentDir(): string | undefined {
+  try {
+    // Dynamic import to avoid build errors when package is not available
+    const pi = require("@mariozechner/pi-coding-agent");
+    return pi.getAgentDir?.();
+  } catch {
+    return undefined;
+  }
+}
+
 // ============================================================
 // Types
 // ============================================================
@@ -103,7 +114,9 @@ export const DEFAULT_CONFIG: Config = {
 
 /**
  * 获取配置目录路径
- * 优先使用 CONFIG_DIR 环境变量，否则使用默认路径
+ * 优先使用 CONFIG_DIR 环境变量
+ * 其次使用 getAgentDir()/pi-search-crawl
+ * 最后使用当前模块的父目录/pi-search-crawl
  */
 export function getConfigDir(): string {
   // 环境变量优先级最高
@@ -112,15 +125,13 @@ export function getConfigDir(): string {
   }
   
   // 尝试从 pi-coding-agent 获取 agentDir
-  // 这需要动态导入以避免循环依赖
   try {
-    // @ts-ignore - pi-coding-agent 可能存在
-    const pi = globalThis.__pi__;
-    if (pi?.agentDir) {
-      return join(pi.agentDir, "pi-search-crawl");
+    const agentDir = getAgentDir();
+    if (agentDir) {
+      return join(agentDir, "pi-search-crawl");
     }
   } catch {
-    // ignore
+    // getAgentDir not available, ignore
   }
   
   // 默认使用当前模块的父目录
