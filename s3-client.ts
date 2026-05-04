@@ -50,6 +50,8 @@ export function createS3Client(config: S3Config): S3Client {
       accessKeyId: config.accessKey,
       secretAccessKey: config.secretKey,
     },
+    // 强制使用路径样式访问（兼容 minio/tigris 等）
+    forcePathStyle: true,
   };
 
   return new S3Client(clientConfig);
