@@ -1,6 +1,6 @@
 # pi-search-crawl 开发进度
 
-**更新日期:** 2026-05-04
+**更新日期:** 2026-05-05
 
 ---
 
@@ -83,11 +83,11 @@
 
 ---
 
-### v0.2.1 S3 存储
+### v0.2.1 S3 存储与缓存系统
 
-**状态:** 🔄 进行中
+**状态:** ✅ 已完成
 
-**开始日期:** 2026-05-04
+**完成日期:** 2026-05-05
 
 #### 提交记录
 
@@ -95,22 +95,90 @@
 |------|------|
 | `48cdece` | feat: implement S3 client with upload/download operations and tests |
 | `1a6e7a1` | fix: enable forcePathStyle for S3 client compatibility |
+| `892094b` | feat: implement cache module with local/S3 cache operations and tests |
+| `2d101cb` | test: add tests for syncLocalToS3 and verify createS3CacheOps key prefixing |
+| `9a57a41` | feat: integrate S3 caching and per-level cache with placeholder LLM |
+| `7deb881` | fix: remove duplicate hash prefix in S3 per-level cache keys |
+| `1c0b95f` | docs: update SPEC for per-level caching and S3 singleton |
 
-#### 实现内容
+#### 模块清单
 
 - **s3-client.ts**: S3 客户端核心模块
   - `createS3Client()` - 创建 S3 客户端（支持 minio/tigris 路径样式）
-  - `uploadContent()` - 上传字符串内容
-  - `uploadFile()` - 上传本地文件
-  - `downloadContent()` - 下载内容为字符串
-  - `downloadToDirectory()` - 下载文件到本地目录
-  - `fileExists()` - 检查文件是否存在
-  - `listFiles()` - 列出指定前缀的文件
+  - `uploadContent()` / `uploadFile()` - 上传字符串/文件
+  - `downloadContent()` / `downloadToDirectory()` - 下载内容/文件
+  - `fileExists()` / `listFiles()` - 文件存在性检查/列表
 
-- **s3-client.test.ts**: 单元测试 (31 个测试用例)
-  - 上传/下载核心功能测试
-  - 错误处理测试
-  - Content-Type 推断测试
+- **cache.ts**: 缓存操作模块（per-level 设计）
+  - `generateUrlHash()` - URL MD5 哈希
+  - `getCachePath()` - per-level 路径（raw/clean/summary .md + .json）
+  - `hasLocalCacheLevel()` / `getLocalCacheLevel()` / `saveLocalCacheLevel()` - 本地 per-level 缓存
+  - `hasS3CacheLevel()` / `getS3CacheLevel()` / `saveS3CacheLevel()` - S3 per-level 缓存
+  - `createS3CacheOps()` - S3 操作封装（以 hash 为 prefix）
+  - `deleteLocalCache()` / `getCacheStats()` - 删除/统计
+
+- **types.ts**: 共享类型定义
+  - `CrawlMode`, `MODE_LEVELS` - 内容级别与排序常量
+  - `CacheLevelMeta`, `CachePath` - per-level 元数据与路径
+  - `getEffectiveMode()` - crawl mode 约束逻辑
+
+- **llm.ts**: LLM 调用占位模块（输入原样返回）
+  - `callCleanLLM()` / `callSummaryLLM()` - 占位实现
+  - `getLLMInfo()` - LLM 配置信息
+
+- **config.ts**: 配置增强
+  - `storage.remoteCache` (boolean) - S3 远程缓存开关
+  - `storage.s3.bucket` (string) - 数据桶名称
+  - `validateConfig()` 新增 remoteCache + bucket 校验
+
+- **index.ts**: 核心集成
+  - S3 客户端单例初始化（插件加载时创建一次，按 remoteCache 条件控制）
+  - `ensureLevel()` - 分步缓存流程（本地 → S3 → 生成 → 保存 → S3上传）
+  - `fetch_web_page` 新增 `mode` 参数（raw/clean/summary）
+  - `getEffectiveMode()` - 模式约束降级逻辑
+  - 分步进度输出（per-level 消息）
+
+#### 配置文件变更
+
+```jsonc
+"storage": {
+  "remoteCache": true,            // 新增：S3 远程缓存开关
+  "s3": {
+    "bucket": "my-bucket"         // 新增：数据桶名称
+  }
+}
+```
+
+#### 缓存结构
+
+```
+cacheDir/{hash}/
+├── raw.md         raw.json       // { url, uploadedAt }
+├── clean.md       clean.json
+└── summary.md     summary.json
+```
+
+Meta 从汇总的 meta.json 拆分为每个级别独立的 .json 文件，实现逐级缓存判断。
+
+#### 分步处理流程
+
+```
+ensureLevel("raw")     → 本地 → S3(remoteCache=true) → 爬取
+ensureLevel("clean")   → 本地 → S3(remoteCache=true) → callCleanLLM
+ensureLevel("summary") → 本地 → S3(remoteCache=true) → callSummaryLLM
+```
+
+#### 单元测试
+
+| 文件 | 测试数 | 覆盖内容 |
+|------|--------|----------|
+| s3-client.test.ts | 31 | 上传/下载/存在检查/列表/Content-Type |
+| cache.test.ts | 24 | per-level 本地/S3 缓存、has/get/save、统计 |
+| types.test.ts | 6 | MODE_LEVELS 排序与常量值 |
+| llm.test.ts | 14 | 占位行为、边界内容、多 config |
+| config.test.ts | 35 | resolveApiKey/Prompt、validate、load、remoteCache |
+| index.test.ts | 13 | getEffectiveMode 9 种组合全覆盖 |
+| **合计** | **123** | |
 
 #### 功能测试记录
 
@@ -121,23 +189,21 @@
 | 2026-05-04 | 上传 image.png 到 S3 | ✅ 通过 |
 | 2026-05-04 | 上传 docs 目录到 S3 | ✅ 通过 |
 | 2026-05-04 | 下载云端 docs 目录到本地 | ✅ 通过 |
+| 2026-05-05 | 本地缓存保存（raw.md + raw.json） | ✅ 通过 |
+| 2026-05-05 | S3 双层目录 Bug 修复验证 | ✅ 通过 |
 
 ---
 
 ## 待完成功能
 
-### 缓存同步
+### LLM 实际 API 调用
 
-- [ ] S3 ↔ 本地缓存同步逻辑
-- [ ] meta.json 管理
+- [ ] `callCleanLLM()` - 实现 OpenAI/Anthropic API 调用
+- [ ] `callSummaryLLM()` - 实现 OpenAI/Anthropic API 调用
+- [ ] LLM 错误处理、重试与超时
 
-### 本地缓存系统
+### 集成测试
 
-- [ ] 本地缓存逻辑
-- [ ] 多级缓存优先级（本地 > S3 > 重新爬取）
-
-### LLM 清洗/总结
-
-- [ ] LLM 调用函数 (clean LLM)
-- [ ] LLM 调用函数 (summary LLM)
-- [ ] 模式约束逻辑
+- [ ] 端到端测试（SearXNG + Crawl4AI + S3 + LLM）
+- [ ] S3 remoteCache=true 实际连通性测试
+- [ ] errorMode strict/graceful 行为验证
