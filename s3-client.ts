@@ -333,6 +333,22 @@ function handleS3Error(error: unknown, context: string): S3Result {
 }
 
 /**
+ * 健康检查 - 验证 S3 存储服务是否可用
+ * 使用 RustFS /health 端点，带超时控制
+ */
+export async function checkS3Health(endpoint: string, timeoutMs = 5000): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const response = await fetch(`${endpoint}/health`, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 格式化错误信息
  */
 function formatError(error: unknown): string {

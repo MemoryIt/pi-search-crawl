@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { loadConfig } from "./config";
-import { createS3Client } from "./s3-client";
+import { createS3Client, checkS3Health } from "./s3-client";
 import {
   generateUrlHash,
   getLocalCacheLevel,
@@ -268,7 +268,7 @@ async function callCrawl4AI(
 // Extension
 // ============================================================
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
   // ===== S3 客户端初始化（仅一次） =====
   let s3Client: ReturnType<typeof createS3Client> | null = null;
   let s3Bucket: string | null = null;
@@ -276,16 +276,17 @@ export default function (pi: ExtensionAPI) {
 
   if (config.storage.remoteCache && config.storage.s3) {
     s3Bucket = config.storage.s3.bucket;
-    try {
+    const healthy = await checkS3Health(config.storage.s3.url);
+
+    if (healthy) {
       s3Client = createS3Client(config.storage.s3);
       s3Available = true;
       console.log("✅ S3 远程缓存已启用");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+    } else {
       if (config.errorMode === "strict") {
-        throw new Error(`S3 connection failed: ${message}`);
+        throw new Error("S3 storage service health check failed");
       }
-      console.warn(`⚠️ S3 不可用，将跳过远程缓存: ${message}`);
+      console.warn("⚠️ S3 不可用，将跳过远程缓存");
     }
   }
 
