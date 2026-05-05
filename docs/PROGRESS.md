@@ -6,6 +6,28 @@
 
 ## 版本记录
 
+### v0.1.0 基础功能
+
+**状态:** ✅ 已完成
+
+**完成日期:** 2026-05-03
+
+#### 提交记录
+
+| 提交 | 描述 |
+|------|------|
+| `61753a5` | feat: implement search tool with SearXNG integration |
+| `027530f` | merge: integrate search tool with SearXNG integration |
+| `a82882b` | feat: add fetch_web_page tool using Crawl4AI |
+| `7e29a4f` | chore: change default SEARXNG_URL from host.docker.internal to localhost |
+
+#### 实现内容
+
+- **search 工具**: 使用 SearXNG 元搜索引擎
+- **fetch_web_page 工具**: 使用 Crawl4AI 抓取网页
+
+---
+
 ### v0.2.0 配置系统
 
 **状态:** ✅ 已完成
@@ -61,45 +83,61 @@
 
 ---
 
-### v0.1.0 基础功能
+### v0.2.1 S3 存储
 
-**状态:** ✅ 已完成
+**状态:** 🔄 进行中
 
-**完成日期:** 2026-05-03
+**开始日期:** 2026-05-04
 
 #### 提交记录
 
 | 提交 | 描述 |
 |------|------|
-| `61753a5` | feat: implement search tool with SearXNG integration |
-| `027530f` | merge: integrate search tool with SearXNG integration |
-| `a82882b` | feat: add fetch_web_page tool using Crawl4AI |
-| `7e29a4f` | chore: change default SEARXNG_URL from host.docker.internal to localhost |
+| `48cdece` | feat: implement S3 client with upload/download operations and tests |
+| `1a6e7a1` | fix: enable forcePathStyle for S3 client compatibility |
 
 #### 实现内容
 
-- **search 工具**: 使用 SearXNG 元搜索引擎
-- **fetch_web_page 工具**: 使用 Crawl4AI 抓取网页
+- **s3-client.ts**: S3 客户端核心模块
+  - `createS3Client()` - 创建 S3 客户端（支持 minio/tigris 路径样式）
+  - `uploadContent()` - 上传字符串内容
+  - `uploadFile()` - 上传本地文件
+  - `downloadContent()` - 下载内容为字符串
+  - `downloadToDirectory()` - 下载文件到本地目录
+  - `fileExists()` - 检查文件是否存在
+  - `listFiles()` - 列出指定前缀的文件
+
+- **s3-client.test.ts**: 单元测试 (31 个测试用例)
+  - 上传/下载核心功能测试
+  - 错误处理测试
+  - Content-Type 推断测试
+
+#### 功能测试记录
+
+| 日期 | 测试内容 | 结果 |
+|------|----------|------|
+| 2026-05-04 | S3 连接测试（列出文件列表） | ✅ 通过 |
+| 2026-05-04 | 下载 demo.jpeg 到本地 | ✅ 通过 |
+| 2026-05-04 | 上传 image.png 到 S3 | ✅ 通过 |
+| 2026-05-04 | 上传 docs 目录到 S3 | ✅ 通过 |
+| 2026-05-04 | 下载云端 docs 目录到本地 | ✅ 通过 |
 
 ---
 
 ## 待完成功能
 
-### S3 存储 (v0.2.0)
+### 缓存同步
 
-- [ ] S3Config 类型定义
-- [ ] S3 客户端创建
-- [ ] 上传/下载逻辑
-- [ ] 缓存同步
+- [ ] S3 ↔ 本地缓存同步逻辑
+- [ ] meta.json 管理
 
-### LLM 清洗/总结 (v0.2.0)
+### 本地缓存系统
+
+- [ ] 本地缓存逻辑
+- [ ] 多级缓存优先级（本地 > S3 > 重新爬取）
+
+### LLM 清洗/总结
 
 - [ ] LLM 调用函数 (clean LLM)
 - [ ] LLM 调用函数 (summary LLM)
 - [ ] 模式约束逻辑
-
-### 缓存系统 (v0.2.0)
-
-- [ ] 本地缓存逻辑
-- [ ] 多级缓存优先级
-- [ ] meta.json 管理
