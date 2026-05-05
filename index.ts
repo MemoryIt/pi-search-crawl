@@ -1,6 +1,19 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { loadConfig } from "./config";
+import { createS3Client, checkS3Health } from "./s3-client";
+import {
+  generateUrlHash,
+  getLocalCacheLevel,
+  saveLocalCacheLevel,
+  createS3CacheOps,
+  hasS3CacheLevel,
+  getS3CacheLevel,
+  saveS3CacheLevel,
+} from "./cache";
+import { callCleanLLM, callSummaryLLM, getLLMInfo } from "./llm";
+import type { CrawlMode, S3CacheOperations } from "./types";
+import { getEffectiveMode } from "./types";
 
 // ============================================================
 // Config (loaded from config.json, with env override)
@@ -29,6 +42,84 @@ interface Crawl4AIResponse {
 // ============================================================
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
+
+/** 格式化字节大小 */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** onUpdate 回调类型 */
+type UpdateFn = (update: { content: Array<{ type: "text"; text: string }> }) => void;
+
+/** onUpdate 简写 */
+function notify(update: UpdateFn | undefined, msg: string) {
+  update?.({ content: [{ type: "text", text: msg }] });
+}
+
+/**
+ * 分步确保某级缓存内容
+ * 流程: 本地检查 → S3检查(remoteCache=true) → 生成 → 本地保存 → S3上传(remoteCache=true)
+ */
+async function ensureLevel(
+  level: CrawlMode,
+  url: string,
+  cacheDir: string,
+  s3Ops: S3CacheOperations | null,
+  onUpdate: UpdateFn | undefined,
+  generator: () => Promise<string>
+): Promise<string> {
+  // [1] 检查本地缓存
+  notify(onUpdate, `🔍 [${level}] 检查本地缓存...`);
+  const local = getLocalCacheLevel(url, cacheDir, level);
+  if (local) {
+    notify(onUpdate, `📁 ${level} 缓存命中`);
+    return local.content;
+  }
+
+  // [2] 如果 S3 可用，检查 S3 缓存
+  if (s3Ops) {
+    const s3Exists = await hasS3CacheLevel(s3Ops, url, level);
+    if (s3Exists) {
+      const s3Cache = await getS3CacheLevel(s3Ops, url, level);
+      if (s3Cache) {
+        saveLocalCacheLevel(url, cacheDir, level, s3Cache.content);
+        notify(onUpdate, `☁️ [${level}] S3 缓存命中，已下载到本地`);
+        return s3Cache.content;
+      }
+    }
+  }
+
+  // [3] 生成内容
+  const content = await generator();
+
+  // [4] 本地保存
+  saveLocalCacheLevel(url, cacheDir, level, content);
+
+  // [5] 如果 S3 可用，上传到 S3
+  if (s3Ops) {
+    try {
+      await saveS3CacheLevel(s3Ops, url, level, content);
+      notify(onUpdate, `☁️ 上传 ${level} 到 S3...`);
+    } catch {
+      notify(onUpdate, `⚠️ S3 上传 ${level} 失败`);
+    }
+  }
+
+  return content;
+}
+
+/**
+ * 格式化结果输出
+ */
+function formatFetchPageResult(content: string, url: string): string {
+  let output = `**Fetched Page:** ${url}\n**URL:** ${url}\n**Success:** true`;
+  if (content) {
+    output += `\n\n---\n\n${content}`;
+  }
+  return output;
+}
 
 // ============================================================
 // SearXNG Types (for search tool)
@@ -127,13 +218,13 @@ function formatResults(results: SearXNGResult[]): string {
  * 调用 Crawl4AI /md 端点抓取网页
  */
 async function callCrawl4AI(
-  params: { url: string; f?: string; word_count_threshold?: number },
+  params: { url: string; word_count_threshold?: number },
   timeoutMs: number,
   signal?: AbortSignal
 ): Promise<Crawl4AIResponse> {
   const payload = {
     url: params.url,
-    f: params.f ?? "fit",
+    f: "fit",
     q: null,
     c: "0",
   };
@@ -173,31 +264,32 @@ async function callCrawl4AI(
   }
 }
 
-/**
- * 格式化网页抓取结果为 Markdown
- */
-function formatFetchResult(
-  result: Crawl4AIResponse,
-  extractInstruction?: string
-): string {
-  let output = `**Fetched Page:** ${result.url}\n**URL:** ${result.url}\n**Success:** ${result.success}`;
-
-  if (result.markdown) {
-    output += `\n\n---\n\n${result.markdown}`;
-  }
-
-  if (extractInstruction) {
-    output += `\n\n---\n\n**提取要求：**\n${extractInstruction}`;
-  }
-
-  return output;
-}
-
 // ============================================================
 // Extension
 // ============================================================
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
+  // ===== S3 客户端初始化（仅一次） =====
+  let s3Client: ReturnType<typeof createS3Client> | null = null;
+  let s3Bucket: string | null = null;
+  let s3Available = false;
+
+  if (config.storage.remoteCache && config.storage.s3) {
+    s3Bucket = config.storage.s3.bucket;
+    const healthy = await checkS3Health(config.storage.s3.url);
+
+    if (healthy) {
+      s3Client = createS3Client(config.storage.s3);
+      s3Available = true;
+      console.log("✅ S3 远程缓存已启用");
+    } else {
+      if (config.errorMode === "strict") {
+        throw new Error("S3 storage service health check failed");
+      }
+      console.warn("⚠️ S3 不可用，将跳过远程缓存");
+    }
+  }
+
   pi.registerTool({
     name: "search",
     label: "Search",
@@ -347,10 +439,14 @@ export default function (pi: ExtensionAPI) {
       url: Type.String({
         description: "要抓取的网页 URL",
       }),
-      f: Type.Optional(
-        Type.String({
-          description: '内容过滤器，推荐值 "fit"（智能清洗）或 "raw"（原始内容）',
-          default: "fit",
+      mode: Type.Optional(
+        Type.Union([
+          Type.Literal("raw"),
+          Type.Literal("clean"),
+          Type.Literal("summary"),
+        ], {
+          description: "内容级别: raw(原始), clean(清洗), summary(总结)。默认 clean。",
+          default: "clean",
         })
       ),
       word_count_threshold: Type.Optional(
@@ -368,102 +464,131 @@ export default function (pi: ExtensionAPI) {
           default: DEFAULT_TIMEOUT_SECONDS,
         })
       ),
-      extract_instruction: Type.Optional(
-        Type.String({
-          description:
-            "可选的提取指令，如果提供，将附加在返回的 markdown 后供 LLM 参考。例如：'提取文章的标题、作者和发布日期'",
-        })
-      ),
     }),
 
     async execute(_toolCallId, params, signal, onUpdate, _ctx) {
-      // 参数处理
-      const timeout = (params.timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
-      const filter = params.f ?? "fit";
+      const requestedMode: CrawlMode = params.mode ?? "clean";
+      const { effectiveMode, degraded, reason } = getEffectiveMode(requestedMode, config.crawl.mode);
 
-      // 输出调试信息
-      const debugInfo = `Fetching URL: ${params.url} (filter: ${filter})`;
-      console.log(debugInfo);
-      onUpdate?.({
-        content: [{ type: "text", text: debugInfo }],
-      });
+      if (degraded) {
+        notify(onUpdate, `⚠️ 模式降级: ${reason}`);
+      }
+
+      const url = params.url;
+      const cacheDir = config.storage.cacheDir;
+      const timeout = (params.timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
+      // S3 操作实例（仅当 remoteCache=true 且 S3 可用）
+      const hash = generateUrlHash(url);
+      const s3Ops = (s3Client && s3Available && s3Bucket)
+        ? createS3CacheOps(s3Client, s3Bucket, hash)
+        : null;
 
       try {
-        const result = await callCrawl4AI(
-          {
-            url: params.url,
-            f: filter,
-            word_count_threshold: params.word_count_threshold,
-          },
-          timeout,
-          signal
-        );
+        // ===== Step 1: ensure raw =====
+        const rawContent = await ensureLevel("raw", url, cacheDir, s3Ops, onUpdate, async () => {
+          notify(onUpdate, "🌐 正在爬取...");
+          const result = await callCrawl4AI(
+            { url, word_count_threshold: params.word_count_threshold },
+            timeout,
+            signal
+          );
+          if (!result.success) {
+            throw new Error("Crawl4AI 返回 success=false");
+          }
+          notify(onUpdate, `✅ 爬取完成 (raw.md: ${formatBytes(result.markdown.length)})`);
+          return result.markdown;
+        });
 
-        if (!result.success) {
+        if (effectiveMode === "raw") {
+          notify(onUpdate, "📋 返回内容: raw.md");
           return {
-            content: [
-              {
-                type: "text",
-                text: `**Fetch Failed**\n\nURL: ${params.url}\nCrawl4AI 返回 success=false，可能是因为：\n- 页面无法访问或不存在\n- JavaScript 渲染超时\n- robots.txt 禁止抓取`,
-              },
-            ],
-            details: { url: params.url, success: false },
-            isError: true,
+            content: [{ type: "text", text: formatFetchPageResult(rawContent, url) }],
+            details: { url, mode: "raw" },
           };
         }
 
-        const formatted = formatFetchResult(result, params.extract_instruction);
+        // ===== Step 2: ensure clean =====
+        const cleanContent = await ensureLevel("clean", url, cacheDir, s3Ops, onUpdate, async () => {
+          if (!config.llm.clean) {
+            if (config.errorMode === "strict") {
+              throw new Error("llm.clean 未配置");
+            }
+            // graceful: 降级返回 raw
+            return rawContent;
+          }
+          notify(onUpdate, `🧹 调用清洗模型 (${getLLMInfo(config.llm.clean).modelName})...`);
+          const result = await callCleanLLM(config.llm.clean, rawContent);
+          if (!result.success) {
+            if (config.errorMode === "strict") throw new Error(`清洗失败: ${result.error}`);
+            return rawContent;
+          }
+          notify(onUpdate, `✅ 清洗完成 (clean.md: ${formatBytes(result.content.length)})`);
+          return result.content;
+        });
 
+        if (effectiveMode === "clean") {
+          notify(onUpdate, "📋 返回内容: clean.md");
+          return {
+            content: [{ type: "text", text: formatFetchPageResult(cleanContent, url) }],
+            details: { url, mode: "clean" },
+          };
+        }
+
+        // ===== Step 3: ensure summary =====
+        const summaryContent = await ensureLevel("summary", url, cacheDir, s3Ops, onUpdate, async () => {
+          if (!config.llm.summary) {
+            if (config.errorMode === "strict") {
+              throw new Error("llm.summary 未配置");
+            }
+            return cleanContent;
+          }
+          notify(onUpdate, `📝 调用总结模型 (${getLLMInfo(config.llm.summary).modelName})...`);
+          const result = await callSummaryLLM(config.llm.summary, cleanContent);
+          if (!result.success) {
+            if (config.errorMode === "strict") throw new Error(`总结失败: ${result.error}`);
+            return cleanContent;
+          }
+          notify(onUpdate, `✅ 总结完成 (summary.md: ${formatBytes(result.content.length)})`);
+          return result.content;
+        });
+
+        notify(onUpdate, "📋 返回内容: summary.md");
         return {
-          content: [{ type: "text", text: formatted }],
-          details: {
-            url: result.url,
-            success: result.success,
-            markdownLength: result.markdown.length,
-          },
+          content: [{ type: "text", text: formatFetchPageResult(summaryContent, url) }],
+          details: { url, mode: "summary" },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
 
-        // 检查是否是取消操作
         if (message.includes("aborted")) {
           return {
-            content: [{ type: "text", text: `**Fetch Cancelled**\n\n操作已被取消：${params.url}` }],
-            details: { url: params.url, cancelled: true },
+            content: [{ type: "text", text: `**Fetch Cancelled**\n\n操作已被取消：${url}` }],
+            details: { url, cancelled: true },
             isError: true,
           };
         }
 
-        // 检查常见错误类型并提供友好的错误信息
         let hint = "";
         if (
           message.includes("fetch") ||
           message.includes("ECONNREFUSED") ||
-          message.includes("ENOTFOUND") ||
-          message.includes("aborted")
+          message.includes("ENOTFOUND")
         ) {
           hint =
             "\n\n**提示：** Crawl4AI 服务未启动或无法连接。请检查：\n" +
             "1. Docker 容器是否运行：`docker ps | grep crawl4ai`\n" +
             "2. 容器重启：`docker restart crawl4ai`\n" +
-            "3. 检查 Crawl4AI 端口是否为 11235（可通过环境变量 CRAWL4AI_URL 自定义）\n" +
-            "4. 如果在 pi-less-yolo 环境，已自动使用 host.docker.internal";
+            "3. 检查 Crawl4AI 端口是否为 11235（可通过环境变量 CRAWL4AI_URL 自定义）";
         } else if (message.includes("timeout") || message.includes("Timeout")) {
           hint =
             "\n\n**提示：** 抓取超时。可能原因：\n" +
             "- 页面加载时间过长（可尝试增加 timeout 参数）\n" +
-            "- JavaScript 渲染复杂（可尝试 f=\"raw\" 跳过 JS 渲染）\n" +
-            "- 网络连接问题";
+            "- JavaScript 渲染复杂（可尝试 mode=\"raw\" 跳过 JS 渲染）";
         }
 
         return {
-          content: [
-            {
-              type: "text",
-              text: `**Fetch Error**\n\n${message}${hint}`,
-            },
-          ],
-          details: { url: params.url, error: message },
+          content: [{ type: "text", text: `**Fetch Error**\n\n${message}${hint}` }],
+          details: { url, error: message },
           isError: true,
         };
       }

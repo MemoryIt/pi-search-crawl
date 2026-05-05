@@ -325,6 +325,110 @@ describe("Config System", () => {
       const errors = validateConfig(config);
       expect(errors).toHaveLength(0);
     });
+
+    // ===== remoteCache 校验 =====
+
+    it("should pass when remoteCache is false", () => {
+      const config = {
+        ...DEFAULT_CONFIG,
+        crawl: { mode: "raw" },
+        storage: { cacheDir: "/tmp/cache", remoteCache: false },
+      };
+      const errors = validateConfig(config);
+      expect(errors).toHaveLength(0);
+    });
+
+    it("should pass when remoteCache=true with valid S3 config", () => {
+      const config = {
+        ...DEFAULT_CONFIG,
+        crawl: { mode: "raw" },
+        storage: {
+          cacheDir: "/tmp/cache",
+          remoteCache: true,
+          s3: {
+            url: "https://s3.example.com",
+            accessKey: "key",
+            secretKey: "secret",
+            api: "s3v4" as const,
+            path: "auto" as const,
+            bucket: "my-bucket",
+          },
+        },
+      };
+      const errors = validateConfig(config);
+      expect(errors).toHaveLength(0);
+    });
+
+    it("should fail when remoteCache=true but no s3 config", () => {
+      const config = {
+        ...DEFAULT_CONFIG,
+        crawl: { mode: "raw" },
+        storage: {
+          cacheDir: "/tmp/cache",
+          remoteCache: true,
+        },
+      };
+      const errors = validateConfig(config);
+      const s3Error = errors.find(e => e.path === "storage.remoteCache");
+      expect(s3Error).toBeDefined();
+      expect(s3Error!.message).toContain("storage.s3");
+    });
+
+    it("should fail when remoteCache=true but s3.bucket is empty", () => {
+      const config = {
+        ...DEFAULT_CONFIG,
+        crawl: { mode: "raw" },
+        storage: {
+          cacheDir: "/tmp/cache",
+          remoteCache: true,
+          s3: {
+            url: "https://s3.example.com",
+            accessKey: "key",
+            secretKey: "secret",
+            api: "s3v4" as const,
+            path: "auto" as const,
+            bucket: "",
+          },
+        },
+      };
+      const errors = validateConfig(config);
+      const bucketError = errors.find(e => e.path === "storage.s3.bucket");
+      expect(bucketError).toBeDefined();
+      expect(bucketError!.message).toContain("bucket");
+    });
+
+    it("should fail when remoteCache=true but s3.url is empty", () => {
+      const config = {
+        ...DEFAULT_CONFIG,
+        crawl: { mode: "raw" },
+        storage: {
+          cacheDir: "/tmp/cache",
+          remoteCache: true,
+          s3: {
+            url: "",
+            accessKey: "key",
+            secretKey: "secret",
+            api: "s3v4" as const,
+            path: "auto" as const,
+            bucket: "my-bucket",
+          },
+        },
+      };
+      const errors = validateConfig(config);
+      const urlError = errors.find(e => e.path === "storage.s3.url");
+      expect(urlError).toBeDefined();
+      expect(urlError!.message).toContain("s3.url");
+    });
+
+    it("should pass when remoteCache is undefined (defaults)", () => {
+      const config = {
+        ...DEFAULT_CONFIG,
+        crawl: { mode: "raw" },
+        storage: { cacheDir: "/tmp/cache" },
+      };
+      const errors = validateConfig(config);
+      expect(errors).toHaveLength(0);
+    });
   });
 
   describe("loadConfig", () => {
