@@ -218,13 +218,13 @@ function formatResults(results: SearXNGResult[]): string {
  * 调用 Crawl4AI /md 端点抓取网页
  */
 async function callCrawl4AI(
-  params: { url: string; f?: string; word_count_threshold?: number },
+  params: { url: string; word_count_threshold?: number },
   timeoutMs: number,
   signal?: AbortSignal
 ): Promise<Crawl4AIResponse> {
   const payload = {
     url: params.url,
-    f: params.f ?? "fit",
+    f: "fit",
     q: null,
     c: "0",
   };
@@ -262,26 +262,6 @@ async function callCrawl4AI(
     signal?.removeEventListener("abort", externalSignalHandler);
     throw error;
   }
-}
-
-/**
- * 格式化网页抓取结果为 Markdown
- */
-function formatFetchResult(
-  result: Crawl4AIResponse,
-  extractInstruction?: string
-): string {
-  let output = `**Fetched Page:** ${result.url}\n**URL:** ${result.url}\n**Success:** ${result.success}`;
-
-  if (result.markdown) {
-    output += `\n\n---\n\n${result.markdown}`;
-  }
-
-  if (extractInstruction) {
-    output += `\n\n---\n\n**提取要求：**\n${extractInstruction}`;
-  }
-
-  return output;
 }
 
 // ============================================================
@@ -468,12 +448,6 @@ export default function (pi: ExtensionAPI) {
           default: "clean",
         })
       ),
-      f: Type.Optional(
-        Type.String({
-          description: '内容过滤器，推荐值 "fit"（智能清洗）或 "raw"（原始内容）',
-          default: "fit",
-        })
-      ),
       word_count_threshold: Type.Optional(
         Type.Integer({
           description: "最小段落字数阈值，用于过滤过短的段落，默认 10",
@@ -489,12 +463,6 @@ export default function (pi: ExtensionAPI) {
           default: DEFAULT_TIMEOUT_SECONDS,
         })
       ),
-      extract_instruction: Type.Optional(
-        Type.String({
-          description:
-            "可选的提取指令，如果提供，将附加在返回的 markdown 后供 LLM 参考。例如：'提取文章的标题、作者和发布日期'",
-        })
-      ),
     }),
 
     async execute(_toolCallId, params, signal, onUpdate, _ctx) {
@@ -508,8 +476,6 @@ export default function (pi: ExtensionAPI) {
       const url = params.url;
       const cacheDir = config.storage.cacheDir;
       const timeout = (params.timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
-      const filter = params.f ?? "fit";
-
       // S3 操作实例（仅当 remoteCache=true 且 S3 可用）
       const hash = generateUrlHash(url);
       const s3Ops = (s3Client && s3Available && s3Bucket)
@@ -521,7 +487,7 @@ export default function (pi: ExtensionAPI) {
         const rawContent = await ensureLevel("raw", url, cacheDir, s3Ops, onUpdate, async () => {
           notify(onUpdate, "🌐 正在爬取...");
           const result = await callCrawl4AI(
-            { url, f: filter, word_count_threshold: params.word_count_threshold },
+            { url, word_count_threshold: params.word_count_threshold },
             timeout,
             signal
           );
@@ -616,7 +582,7 @@ export default function (pi: ExtensionAPI) {
           hint =
             "\n\n**提示：** 抓取超时。可能原因：\n" +
             "- 页面加载时间过长（可尝试增加 timeout 参数）\n" +
-            "- JavaScript 渲染复杂（可尝试 f=\"raw\" 跳过 JS 渲染）";
+            "- JavaScript 渲染复杂（可尝试 mode=\"raw\" 跳过 JS 渲染）";
         }
 
         return {
