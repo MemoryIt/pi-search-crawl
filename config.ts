@@ -46,6 +46,7 @@ export interface S3Config {
   secretKey: string;
   api: "s3v4";
   path: "auto";
+  bucket: string;
 }
 
 /** 完整配置结构 */
@@ -67,6 +68,7 @@ export interface Config {
   };
   storage: {
     cacheDir: string;
+    remoteCache?: boolean;
     s3?: S3Config;
   };
   errorMode: "strict" | "graceful";
@@ -104,6 +106,7 @@ export const DEFAULT_CONFIG: Config = {
   llm: {},
   storage: {
     cacheDir: join(DEFAULT_CONFIG_DIR, ".cache"),
+    remoteCache: false,
   },
   errorMode: "graceful",
 };
@@ -334,6 +337,29 @@ export function validateConfig(config: Config): ConfigValidationError[] {
       path: "storage.cacheDir",
       message: "storage.cacheDir is required",
     });
+  }
+  
+  // remoteCache=true 时校验 S3 配置
+  if (config.storage?.remoteCache) {
+    if (!config.storage?.s3) {
+      errors.push({
+        path: "storage.remoteCache",
+        message: "remoteCache=true requires storage.s3 to be configured",
+      });
+    } else {
+      if (!config.storage.s3.bucket) {
+        errors.push({
+          path: "storage.s3.bucket",
+          message: "storage.s3.bucket is required when remoteCache=true",
+        });
+      }
+      if (!config.storage.s3.url) {
+        errors.push({
+          path: "storage.s3.url",
+          message: "storage.s3.url is required when remoteCache=true",
+        });
+      }
+    }
   }
   
   // 4. 校验 errorMode

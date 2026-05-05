@@ -1,66 +1,19 @@
 /**
  * 缓存操作封装
  * 
- * 提供本地缓存和 S3 缓存的统一管理，包括：
+ * 提供本地缓存和 S3 缓存的统一管理，采用 per-level 设计：
+ * - 每级独立缓存文件（raw.md + raw.json, clean.md + clean.json, summary.md + summary.json）
  * - URL 哈希计算
  * - 本地缓存读写
  * - S3 缓存同步
- * - meta.json 管理
  */
 
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync } from "fs";
-import { join, dirname } from "path";
+import { join } from "path";
 import { S3Client } from "@aws-sdk/client-s3";
 import { uploadContent, downloadContent, fileExists, listFiles } from "./s3-client";
-
-/**
- * 缓存数据类型
- */
-export interface CacheData {
-  url: string;
-  hash: string;
-  raw?: string;
-  clean?: string;
-  summary?: string;
-  meta: CacheMeta;
-}
-
-/**
- * 缓存元数据
- */
-export interface CacheMeta {
-  url: string;
-  crawledAt: string;
-  crawlMode: "raw" | "clean" | "summary";
-  rawSize: number;
-  cleanSize?: number;
-  summarySize?: number;
-}
-
-/**
- * 缓存路径信息
- */
-export interface CachePath {
-  hash: string;
-  dir: string;
-  rawPath: string;
-  cleanPath: string;
-  summaryPath: string;
-  metaPath: string;
-}
-
-/**
- * S3 缓存操作接口
- */
-export interface S3CacheOperations {
-  bucket: string;
-  prefix: string;
-  upload: (key: string, content: string) => Promise<boolean>;
-  download: (key: string) => Promise<string | null>;
-  exists: (key: string) => Promise<boolean>;
-  list: (prefix: string) => Promise<string[]>;
-}
+import type { CrawlMode, CacheLevelMeta, CachePath, S3CacheOperations } from "./types";
 
 /**
  * 生成 URL 的哈希值（MD5）
@@ -75,184 +28,119 @@ export function generateUrlHash(url: string): string {
 export function getCachePath(url: string, cacheDir: string): CachePath {
   const hash = generateUrlHash(url);
   const dir = join(cacheDir, hash);
-  
+
   return {
     hash,
     dir,
     rawPath: join(dir, "raw.md"),
+    rawJsonPath: join(dir, "raw.json"),
     cleanPath: join(dir, "clean.md"),
+    cleanJsonPath: join(dir, "clean.json"),
     summaryPath: join(dir, "summary.md"),
-    metaPath: join(dir, "meta.json"),
+    summaryJsonPath: join(dir, "summary.json"),
   };
 }
 
-/**
- * 检查本地缓存是否存在
- */
-export function hasLocalCache(url: string, cacheDir: string, mode?: "raw" | "clean" | "summary"): boolean {
-  const paths = getCachePath(url, cacheDir);
-  
-  // 检查缓存目录是否存在
-  if (!existsSync(paths.dir)) {
-    return false;
-  }
-  
-  // 检查所需的最小文件
-  if (mode === undefined || mode === "raw") {
-    return existsSync(paths.rawPath);
-  }
-  
-  if (mode === "clean") {
-    return existsSync(paths.rawPath) && existsSync(paths.cleanPath);
-  }
-  
-  if (mode === "summary") {
-    return existsSync(paths.rawPath) && existsSync(paths.cleanPath) && existsSync(paths.summaryPath);
-  }
-  
-  return existsSync(paths.rawPath);
-}
+// ============================================================
+// Local Cache (per-level)
+// ============================================================
 
 /**
- * 读取本地缓存
+ * 检查本地某级别缓存是否存在
+ * 判断依据: {hash}/{level}.json 文件存在
  */
-export function getLocalCache(url: string, cacheDir: string): CacheData | null {
-  const paths = getCachePath(url, cacheDir);
-  
-  // 检查缓存目录是否存在
-  if (!existsSync(paths.dir)) {
-    return null;
-  }
-  
-  // 读取 meta.json
-  if (!existsSync(paths.metaPath)) {
-    return null;
-  }
-  
-  try {
-    const meta: CacheMeta = JSON.parse(readFileSync(paths.metaPath, "utf-8"));
-    const result: CacheData = {
-      url,
-      hash: paths.hash,
-      meta,
-    };
-    
-    // 读取各级别的内容
-    if (existsSync(paths.rawPath)) {
-      result.raw = readFileSync(paths.rawPath, "utf-8");
-    }
-    if (existsSync(paths.cleanPath)) {
-      result.clean = readFileSync(paths.cleanPath, "utf-8");
-    }
-    if (existsSync(paths.summaryPath)) {
-      result.summary = readFileSync(paths.summaryPath, "utf-8");
-    }
-    
-    return result;
-  } catch (error) {
-    console.warn(`Failed to read local cache for ${url}:`, error);
-    return null;
-  }
-}
-
-/**
- * 保存本地缓存
- */
-export function saveLocalCache(
+export function hasLocalCacheLevel(
   url: string,
   cacheDir: string,
-  data: {
-    raw?: string;
-    clean?: string;
-    summary?: string;
-  }
-): CacheData {
+  level: CrawlMode
+): boolean {
   const paths = getCachePath(url, cacheDir);
-  
+  const jsonPath = getLevelJsonPath(paths, level);
+  return existsSync(jsonPath);
+}
+
+/**
+ * 读取本地某级别缓存
+ * 返回内容字符串和元数据
+ */
+export function getLocalCacheLevel(
+  url: string,
+  cacheDir: string,
+  level: CrawlMode
+): { content: string; meta: CacheLevelMeta } | null {
+  const paths = getCachePath(url, cacheDir);
+  const jsonPath = getLevelJsonPath(paths, level);
+  const mdPath = getLevelMdPath(paths, level);
+
+  if (!existsSync(jsonPath) || !existsSync(mdPath)) {
+    return null;
+  }
+
+  try {
+    const meta: CacheLevelMeta = JSON.parse(readFileSync(jsonPath, "utf-8"));
+    const content = readFileSync(mdPath, "utf-8");
+    return { content, meta };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 保存某级别缓存到本地
+ * 写入 {level}.md 和 {level}.json
+ */
+export function saveLocalCacheLevel(
+  url: string,
+  cacheDir: string,
+  level: CrawlMode,
+  content: string
+): CacheLevelMeta {
+  const paths = getCachePath(url, cacheDir);
+
   // 创建缓存目录
   if (!existsSync(paths.dir)) {
     mkdirSync(paths.dir, { recursive: true });
   }
-  
-  // 更新 meta
-  let meta: CacheMeta;
-  const metaPath = paths.metaPath;
-  
-  if (existsSync(metaPath)) {
-    try {
-      meta = JSON.parse(readFileSync(metaPath, "utf-8"));
-    } catch {
-      meta = {
-        url,
-        crawledAt: new Date().toISOString(),
-        crawlMode: "raw",
-        rawSize: 0,
-      };
-    }
-  } else {
-    meta = {
-      url,
-      crawledAt: new Date().toISOString(),
-      crawlMode: "raw",
-      rawSize: 0,
-    };
-  }
-  
-  // 更新内容
-  if (data.raw !== undefined) {
-    writeFileSync(paths.rawPath, data.raw, "utf-8");
-    meta.rawSize = data.raw.length;
-    if (!meta.crawledAt) {
-      meta.crawledAt = new Date().toISOString();
-    }
-  }
-  
-  if (data.clean !== undefined) {
-    writeFileSync(paths.cleanPath, data.clean, "utf-8");
-    meta.cleanSize = data.clean.length;
-    meta.crawlMode = "clean";
-  }
-  
-  if (data.summary !== undefined) {
-    writeFileSync(paths.summaryPath, data.summary, "utf-8");
-    meta.summarySize = data.summary.length;
-    meta.crawlMode = "summary";
-  }
-  
-  // 保存 meta.json
-  writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf-8");
-  
-  return {
+
+  const meta: CacheLevelMeta = {
     url,
-    hash: paths.hash,
-    raw: data.raw,
-    clean: data.clean,
-    summary: data.summary,
-    meta,
+    uploadedAt: new Date().toISOString(),
   };
+
+  const jsonPath = getLevelJsonPath(paths, level);
+  const mdPath = getLevelMdPath(paths, level);
+
+  writeFileSync(jsonPath, JSON.stringify(meta, null, 2), "utf-8");
+  writeFileSync(mdPath, content, "utf-8");
+
+  return meta;
 }
 
 /**
- * 删除本地缓存
+ * 删除本地缓存（整个 hash 目录）
  */
 export function deleteLocalCache(url: string, cacheDir: string): boolean {
   const paths = getCachePath(url, cacheDir);
-  
+
   if (!existsSync(paths.dir)) {
     return false;
   }
-  
+
   try {
     rmSync(paths.dir, { recursive: true, force: true });
     return true;
-  } catch (error) {
-    console.warn(`Failed to delete local cache for ${url}:`, error);
+  } catch {
     return false;
   }
 }
 
+// ============================================================
+// S3 Cache (per-level)
+// ============================================================
+
 /**
  * 创建 S3 缓存操作实例
+ * prefix 为 URL hash，所有 key 前面都会加上 prefix/
  */
 export function createS3CacheOps(
   client: S3Client,
@@ -275,158 +163,80 @@ export function createS3CacheOps(
     },
     list: async (searchPrefix: string): Promise<string[]> => {
       const result = await listFiles(client, bucket, `${prefix}/${searchPrefix}`);
-      if (!result.success) {
-        return [];
-      }
-      // 移除 prefix 部分
-      return result.files.map(f => f.key.replace(`${prefix}/`, ""));
+      if (!result.success) return [];
+      return result.files.map((f) => f.key.replace(`${prefix}/`, ""));
     },
   };
 }
 
 /**
- * 检查 S3 缓存是否存在
+ * 检查 S3 某级别缓存是否存在
+ * 判断依据: {hash}/{level}.json 存在
  */
-export async function hasS3Cache(
+export async function hasS3CacheLevel(
   s3Ops: S3CacheOperations,
-  url: string
+  url: string,
+  level: CrawlMode
 ): Promise<boolean> {
   const hash = generateUrlHash(url);
-  const metaKey = `${hash}/meta.json`;
-  return await s3Ops.exists(metaKey);
+  return await s3Ops.exists(`${hash}/${level}.json`);
 }
 
 /**
- * 从 S3 读取缓存
+ * 从 S3 读取某级别缓存
+ * 返回内容字符串和元数据
  */
-export async function getS3Cache(
+export async function getS3CacheLevel(
   s3Ops: S3CacheOperations,
-  url: string
-): Promise<CacheData | null> {
+  url: string,
+  level: CrawlMode
+): Promise<{ content: string; meta: CacheLevelMeta } | null> {
   const hash = generateUrlHash(url);
-  
-  // 读取 meta.json
-  const metaContent = await s3Ops.download(`${hash}/meta.json`);
-  if (!metaContent) {
-    return null;
-  }
-  
+
+  const jsonContent = await s3Ops.download(`${hash}/${level}.json`);
+  if (!jsonContent) return null;
+
+  const mdContent = await s3Ops.download(`${hash}/${level}.md`);
+  if (!mdContent) return null;
+
   try {
-    const meta: CacheMeta = JSON.parse(metaContent);
-    const result: CacheData = {
-      url,
-      hash,
-      meta,
-    };
-    
-    // 读取各级别的内容
-    const rawContent = await s3Ops.download(`${hash}/raw.md`);
-    if (rawContent) {
-      result.raw = rawContent;
-    }
-    
-    const cleanContent = await s3Ops.download(`${hash}/clean.md`);
-    if (cleanContent) {
-      result.clean = cleanContent;
-    }
-    
-    const summaryContent = await s3Ops.download(`${hash}/summary.md`);
-    if (summaryContent) {
-      result.summary = summaryContent;
-    }
-    
-    return result;
-  } catch (error) {
-    console.warn(`Failed to parse S3 cache for ${url}:`, error);
+    const meta: CacheLevelMeta = JSON.parse(jsonContent);
+    return { content: mdContent, meta };
+  } catch {
     return null;
   }
 }
 
 /**
- * 上传到 S3 缓存
+ * 上传某级别缓存到 S3
+ * 上传 {level}.md 和 {level}.json
  */
-export async function saveS3Cache(
+export async function saveS3CacheLevel(
   s3Ops: S3CacheOperations,
   url: string,
-  data: {
-    raw?: string;
-    clean?: string;
-    summary?: string;
-    meta: CacheMeta;
-  }
+  level: CrawlMode,
+  content: string
 ): Promise<boolean> {
   const hash = generateUrlHash(url);
-  
-  // 上传 meta.json
-  const metaSuccess = await s3Ops.upload(`${hash}/meta.json`, JSON.stringify(data.meta, null, 2));
-  if (!metaSuccess) {
-    return false;
-  }
-  
-  // 上传各个文件
-  if (data.raw !== undefined) {
-    const rawSuccess = await s3Ops.upload(`${hash}/raw.md`, data.raw);
-    if (!rawSuccess) return false;
-  }
-  
-  if (data.clean !== undefined) {
-    const cleanSuccess = await s3Ops.upload(`${hash}/clean.md`, data.clean);
-    if (!cleanSuccess) return false;
-  }
-  
-  if (data.summary !== undefined) {
-    const summarySuccess = await s3Ops.upload(`${hash}/summary.md`, data.summary);
-    if (!summarySuccess) return false;
-  }
-  
-  return true;
+  const meta: CacheLevelMeta = {
+    url,
+    uploadedAt: new Date().toISOString(),
+  };
+
+  const jsonOk = await s3Ops.upload(`${hash}/${level}.json`, JSON.stringify(meta));
+  if (!jsonOk) return false;
+
+  const mdOk = await s3Ops.upload(`${hash}/${level}.md`, content);
+  return mdOk;
 }
 
-/**
- * 从 S3 同步到本地
- */
-export async function syncS3ToLocal(
-  s3Ops: S3CacheOperations,
-  url: string,
-  cacheDir: string
-): Promise<CacheData | null> {
-  // 获取 S3 缓存
-  const s3Cache = await getS3Cache(s3Ops, url);
-  if (!s3Cache) {
-    return null;
-  }
-  
-  // 保存到本地
-  return saveLocalCache(url, cacheDir, {
-    raw: s3Cache.raw,
-    clean: s3Cache.clean,
-    summary: s3Cache.summary,
-  });
-}
-
-/**
- * 从本地同步到 S3
- */
-export async function syncLocalToS3(
-  s3Ops: S3CacheOperations,
-  url: string,
-  cacheDir: string
-): Promise<boolean> {
-  const localCache = getLocalCache(url, cacheDir);
-  if (!localCache) {
-    return false;
-  }
-  
-  return await saveS3Cache(s3Ops, url, {
-    raw: localCache.raw,
-    clean: localCache.clean,
-    summary: localCache.summary,
-    meta: localCache.meta,
-  });
-}
+// ============================================================
+// Cache Stats
+// ============================================================
 
 /**
  * 获取缓存统计信息
+ * 遍历 cacheDir 下所有 hash 目录，读取各 level 的 .json 文件
  */
 export function getCacheStats(cacheDir: string): {
   totalEntries: number;
@@ -438,7 +248,7 @@ export function getCacheStats(cacheDir: string): {
     rawSize: number;
     cleanSize?: number;
     summarySize?: number;
-    crawledAt: string;
+    uploadedAt: string;
   }>;
 } {
   const stats = {
@@ -451,67 +261,122 @@ export function getCacheStats(cacheDir: string): {
       rawSize: number;
       cleanSize?: number;
       summarySize?: number;
-      crawledAt: string;
+      uploadedAt: string;
     }>,
   };
-  
-  if (!existsSync(cacheDir)) {
-    return stats;
-  }
-  
+
+  if (!existsSync(cacheDir)) return stats;
+
   const entries = readdirSync(cacheDir);
-  
+
   for (const entry of entries) {
     const entryPath = join(cacheDir, entry);
-    
-    // 检查是否是目录（每个缓存条目是一个目录）
-    if (!statSync(entryPath).isDirectory()) {
-      continue;
+    if (!statSync(entryPath).isDirectory()) continue;
+
+    // 查找各 level 的 json 和 md
+    const rawJsonPath = join(entryPath, "raw.json");
+    const cleanJsonPath = join(entryPath, "clean.json");
+    const summaryJsonPath = join(entryPath, "summary.json");
+
+    const rawMdPath = join(entryPath, "raw.md");
+    const cleanMdPath = join(entryPath, "clean.md");
+    const summaryMdPath = join(entryPath, "summary.md");
+
+    // 从第一个可用的 json 获取 url
+    let url = "";
+    let uploadedAt = "";
+    const rawMeta = readJsonSafe(rawJsonPath);
+    const cleanMeta = readJsonSafe(cleanJsonPath);
+    const summaryMeta = readJsonSafe(summaryJsonPath);
+
+    if (rawMeta) {
+      url = rawMeta.url;
+      uploadedAt = rawMeta.uploadedAt;
+    } else if (cleanMeta) {
+      url = cleanMeta.url;
+      uploadedAt = cleanMeta.uploadedAt;
+    } else if (summaryMeta) {
+      url = summaryMeta.url;
+      uploadedAt = summaryMeta.uploadedAt;
+    } else {
+      continue; // 没有可用的元数据
     }
-    
-    const metaPath = join(entryPath, "meta.json");
-    if (!existsSync(metaPath)) {
-      continue;
+
+    let entrySize = 0;
+    let rawSize = 0;
+    let cleanSize: number | undefined;
+    let summarySize: number | undefined;
+
+    if (existsSync(rawMdPath)) {
+      rawSize = statSync(rawMdPath).size;
+      entrySize += rawSize;
     }
-    
-    try {
-      const meta: CacheMeta = JSON.parse(readFileSync(metaPath, "utf-8"));
-      
-      // 计算条目大小
-      let entrySize = 0;
-      const rawPath = join(entryPath, "raw.md");
-      const cleanPath = join(entryPath, "clean.md");
-      const summaryPath = join(entryPath, "summary.md");
-      
-      if (existsSync(rawPath)) {
-        entrySize += statSync(rawPath).size;
-      }
-      if (existsSync(cleanPath)) {
-        entrySize += statSync(cleanPath).size;
-      }
-      if (existsSync(summaryPath)) {
-        entrySize += statSync(summaryPath).size;
-      }
-      entrySize += statSync(metaPath).size;
-      
-      stats.entries.push({
-        hash: entry,
-        url: meta.url,
-        size: entrySize,
-        rawSize: meta.rawSize,
-        cleanSize: meta.cleanSize,
-        summarySize: meta.summarySize,
-        crawledAt: meta.crawledAt,
-      });
-      
-      stats.totalEntries++;
-      stats.totalSize += entrySize;
-    } catch {
-      // 忽略无效的缓存条目
+    if (existsSync(cleanMdPath)) {
+      cleanSize = statSync(cleanMdPath).size;
+      entrySize += cleanSize;
     }
+    if (existsSync(summaryMdPath)) {
+      summarySize = statSync(summaryMdPath).size;
+      entrySize += summarySize;
+    }
+    // 加上 json 文件大小
+    if (existsSync(rawJsonPath)) entrySize += statSync(rawJsonPath).size;
+    if (existsSync(cleanJsonPath)) entrySize += statSync(cleanJsonPath).size;
+    if (existsSync(summaryJsonPath)) entrySize += statSync(summaryJsonPath).size;
+
+    stats.entries.push({
+      hash: entry,
+      url,
+      size: entrySize,
+      rawSize,
+      cleanSize,
+      summarySize,
+      uploadedAt,
+    });
+
+    stats.totalEntries++;
+    stats.totalSize += entrySize;
   }
-  
+
   return stats;
+}
+
+// ============================================================
+// Helper Functions
+// ============================================================
+
+/**
+ * 获取某级别的 json 文件路径
+ */
+function getLevelJsonPath(paths: CachePath, level: CrawlMode): string {
+  switch (level) {
+    case "raw": return paths.rawJsonPath;
+    case "clean": return paths.cleanJsonPath;
+    case "summary": return paths.summaryJsonPath;
+  }
+}
+
+/**
+ * 获取某级别的 md 文件路径
+ */
+function getLevelMdPath(paths: CachePath, level: CrawlMode): string {
+  switch (level) {
+    case "raw": return paths.rawPath;
+    case "clean": return paths.cleanPath;
+    case "summary": return paths.summaryPath;
+  }
+}
+
+/**
+ * 安全读取 json 文件
+ */
+function readJsonSafe(path: string): CacheLevelMeta | null {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    return null;
+  }
 }
 
 // ============================================================
@@ -521,15 +386,13 @@ export function getCacheStats(cacheDir: string): {
 export default {
   generateUrlHash,
   getCachePath,
-  hasLocalCache,
-  getLocalCache,
-  saveLocalCache,
+  hasLocalCacheLevel,
+  getLocalCacheLevel,
+  saveLocalCacheLevel,
   deleteLocalCache,
   createS3CacheOps,
-  hasS3Cache,
-  getS3Cache,
-  saveS3Cache,
-  syncS3ToLocal,
-  syncLocalToS3,
+  hasS3CacheLevel,
+  getS3CacheLevel,
+  saveS3CacheLevel,
   getCacheStats,
 };
