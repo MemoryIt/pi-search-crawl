@@ -164,9 +164,7 @@ describe("Config System", () => {
         crawl: { mode: "clean" },
         llm: {
           clean: {
-            baseUrl: "http://localhost:11434/v1",
-            endpointType: "openai",
-            apiKey: "test-key",
+            providerName: "litellm",
             modelName: "qwen2-0.5b-instruct",
             systemPrompt: { type: "string", value: "You are a cleaner." },
           },
@@ -183,9 +181,7 @@ describe("Config System", () => {
         crawl: { mode: "summary" },
         llm: {
           clean: {
-            baseUrl: "http://localhost:11434/v1",
-            endpointType: "openai",
-            apiKey: "test-key",
+            providerName: "litellm",
             modelName: "qwen2-0.5b-instruct",
             systemPrompt: { type: "string", value: "You are a cleaner." },
           },
@@ -226,9 +222,7 @@ describe("Config System", () => {
         crawl: { mode: "raw" },
         llm: {
           clean: {
-            baseUrl: "",
-            endpointType: "invalid" as any,
-            apiKey: "test-key",
+            providerName: "",
             modelName: "",
             systemPrompt: { type: "invalid" as any, value: "" },
           },
@@ -241,11 +235,8 @@ describe("Config System", () => {
       expect(errors.length).toBeGreaterThanOrEqual(4);
       
       // 验证每个错误都有正确的路径和消息
-      const baseUrlError = errors.find(e => e.path.includes("baseUrl"));
-      expect(baseUrlError?.message).toBe("baseUrl is required");
-      
-      const endpointError = errors.find(e => e.path.includes("endpointType"));
-      expect(endpointError?.message).toContain("openai");
+      const providerNameError = errors.find(e => e.path.includes("providerName"));
+      expect(providerNameError?.message).toBe("providerName is required (e.g., 'litellm')");
       
       const modelNameError = errors.find(e => e.path.includes("modelName"));
       expect(modelNameError?.message).toBe("modelName is required");
@@ -274,16 +265,12 @@ describe("Config System", () => {
         crawl: { mode: "summary" },
         llm: {
           clean: {
-            baseUrl: "http://localhost:11434/v1",
-            endpointType: "openai",
-            apiKey: "test-key",
+            providerName: "litellm",
             modelName: "clean-model",
             systemPrompt: { type: "string", value: "Clean prompt" },
           },
           summary: {
-            baseUrl: "http://localhost:11434/v1",
-            endpointType: "openai",
-            apiKey: "test-key",
+            providerName: "litellm",
             modelName: "summary-model",
             systemPrompt: { type: "string", value: "Summary prompt" },
           },
@@ -307,16 +294,14 @@ describe("Config System", () => {
       expect(cacheDirError?.message).toBe("storage.cacheDir is required");
     });
     
-    it("should validate anthropic endpoint type", () => {
+    it("should validate anthropic provider", () => {
       const config = {
         ...DEFAULT_CONFIG,
         crawl: { mode: "raw" },
         llm: {
           clean: {
-            baseUrl: "https://api.anthropic.com",
-            endpointType: "anthropic" as const,
-            apiKey: "sk-ant",
-            modelName: "claude-3",
+            providerName: "anthropic",
+            modelName: "claude-sonnet-4-5",
             systemPrompt: { type: "string", value: "You are Claude." },
           },
         },

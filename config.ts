@@ -30,13 +30,15 @@ export interface SystemPromptConfig {
   value: string;
 }
 
-/** LLM 配置 */
+/** LLM 配置
+ * 
+ * 通过 Pi 平台的 ModelRegistry 获取模型
+ * providerName 和 modelName 需要与 models.json 中配置的一致
+ */
 export interface LLMConfig {
-  baseUrl: string;
-  endpointType: "openai" | "anthropic";
-  apiKey: string;
-  modelName: string;
-  systemPrompt: SystemPromptConfig;
+  providerName: string;           // Provider 名称，如 "litellm"，需要在 models.json 中配置
+  modelName: string;             // 模型 ID，如 "omlx/Qwen3.5-0.8B-MLX-8bit"
+  systemPrompt: SystemPromptConfig;  // system prompt 配置
 }
 
 /** S3 配置 */
@@ -379,19 +381,11 @@ export function validateConfig(config: Config): ConfigValidationError[] {
 function validateLLMConfig(llm: LLMConfig, path: string): ConfigValidationError[] {
   const errors: ConfigValidationError[] = [];
   
-  if (!llm.baseUrl) {
-    errors.push({ path: `${path}.baseUrl`, message: "baseUrl is required" });
+  if (!llm.providerName) {
+    errors.push({ path: `${path}.providerName`, message: "providerName is required (e.g., 'litellm')" });
   }
   if (!llm.modelName) {
     errors.push({ path: `${path}.modelName`, message: "modelName is required" });
-  }
-  if (!llm.endpointType) {
-    errors.push({ path: `${path}.endpointType`, message: "endpointType is required" });
-  } else if (!["openai", "anthropic"].includes(llm.endpointType)) {
-    errors.push({
-      path: `${path}.endpointType`,
-      message: "endpointType must be 'openai' or 'anthropic'",
-    });
   }
   if (!llm.systemPrompt) {
     errors.push({ path: `${path}.systemPrompt`, message: "systemPrompt is required" });

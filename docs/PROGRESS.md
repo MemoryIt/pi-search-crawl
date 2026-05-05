@@ -238,16 +238,79 @@ ensureLevel("summary") → 本地 → S3(remoteCache=true) → callSummaryLLM
 
 ---
 
+### v0.2.3 LLM 实际 API 调用
+
+**状态:** ✅ 已完成
+
+**完成日期:** 2026-05-05
+
+#### 实现内容
+
+- **llm.ts**: 使用 pi-ai 平台实现 LLM 调用
+  - 通过 `ModelRegistry` 和 `AuthStorage` 管理模型和认证
+  - 使用 `completeSimple()` 调用 LLM（支持所有 Pi 平台配置的 provider）
+  - 通过 `getApiKeyAndHeaders()` 统一获取 API Key
+    - 优先级：`models.json (providerConfig.apiKey)` > `auth.json` > 环境变量
+  - 从 `AssistantMessage` 提取纯文本内容
+
+- **config.ts**: 简化 `LLMConfig` 类型
+  - 移除 `baseUrl`、`endpointType`、`apiKey` 字段
+  - 新增 `providerName` 字段（如 `"litellm"`），指向 Pi 的 models.json 中的 provider
+  - `modelName` 保持不变，需与 models.json 中的模型 ID 一致
+  - `systemPrompt` 保持不变（支持 `string`/`env`/`file` 三种类型）
+
+#### 配置文件变更
+
+```jsonc
+// 旧配置（已移除）
+"llm": {
+  "clean": {
+    "baseUrl": "...",          // 移除
+    "endpointType": "openai",   // 移除
+    "apiKey": "...",            // 移除
+    "modelName": "...",
+    "systemPrompt": { ... }
+  }
+}
+
+// 新配置
+"llm": {
+  "clean": {
+    "providerName": "litellm",   // 新增：指向 Pi models.json 中的 provider
+    "modelName": "...",
+    "systemPrompt": { ... }
+  }
+}
+```
+
+#### 新增依赖
+
+| 包 | 用途 |
+|------|------|
+| `@mariozechner/pi-ai` | LLM 调用（`completeSimple`、`getModel`） |
+| `@mariozechner/pi-coding-agent` | 认证与模型管理（`AuthStorage`、`ModelRegistry`） |
+
+#### 功能测试记录
+
+| 日期 | 测试内容 | 结果 |
+|------|----------|------|
+| 2026-05-05 | LLM 清洗调用 (litellm provider) | ✅ 通过 |
+| 2026-05-05 | LLM 总结调用 (litellm provider) | ✅ 通过 |
+| 2026-05-05 | models.json 中 apiKey 自动读取 | ✅ 通过 |
+| 2026-05-05 | systemPrompt file 类型（从文件读取） | ✅ 通过 |
+
+---
+
 ## 待完成功能
 
 ### LLM 实际 API 调用
 
-- [ ] `callCleanLLM()` - 实现 OpenAI/Anthropic API 调用
-- [ ] `callSummaryLLM()` - 实现 OpenAI/Anthropic API 调用
-- [ ] LLM 错误处理、重试与超时
+- [x] `callCleanLLM()` - 使用 pi-ai 平台调用 LLM（✅ v0.2.3）
+- [x] `callSummaryLLM()` - 使用 pi-ai 平台调用 LLM（✅ v0.2.3）
+- [x] LLM 错误处理、重试与超时（✅ v0.2.3）
 
 ### 集成测试
 
 - [ ] 端到端测试（SearXNG + Crawl4AI + S3 + LLM）
 - [x] S3 remoteCache=true 实际连通性测试（健康检查已覆盖）
-- [x] errorMode strict/graceful 行为验证（S3 场景已验证，LLM 场景待 LLM 接入后验证）
+- [x] errorMode strict/graceful 行为验证（已覆盖 LLM 场景）
