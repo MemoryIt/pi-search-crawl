@@ -21,6 +21,7 @@ import {
   getS3Cache,
   saveS3Cache,
   syncS3ToLocal,
+  syncLocalToS3,
   getCacheStats,
 } from "./cache";
 import { S3CacheOperations } from "./cache";
@@ -444,6 +445,67 @@ describe("Cache Operations", () => {
       expect(typeof s3Ops.exists).toBe("function");
       expect(typeof s3Ops.list).toBe("function");
     });
+
+    it("should prepend prefix to upload keys", async () => {
+      // 创建一个带有钩子的 mock client 来验证调用参数
+      let capturedCalls: Array<{ bucket: string; key: string; content: string }> = [];
+      const mockClient = {
+        send: async (command: any) => {
+          if (command.constructor.name === "PutObjectCommand") {
+            capturedCalls.push({
+              bucket: command.input.Bucket,
+              key: command.input.Key,
+              content: command.input.Body
+            });
+          }
+          return {};
+        }
+      };
+      
+      const s3Ops = createS3CacheOps(mockClient as any, "test-bucket", "my-prefix");
+      await s3Ops.upload("hash/file.md", "content");
+      
+      expect(capturedCalls.length).toBe(1);
+      expect(capturedCalls[0].bucket).toBe("test-bucket");
+      expect(capturedCalls[0].key).toBe("my-prefix/hash/file.md");
+    });
+
+    it("should prepend prefix to download keys", async () => {
+      let capturedKeys: string[] = [];
+      const mockClient = {
+        send: async (command: any) => {
+          if (command.constructor.name === "GetObjectCommand") {
+            capturedKeys.push(command.input.Key);
+            return { Body: require('stream').Readable.from(Buffer.from('test content')) };
+          }
+          return {};
+        }
+      };
+      
+      const s3Ops = createS3CacheOps(mockClient as any, "bucket", "cache/prefix");
+      await s3Ops.download("abc123/meta.json");
+      
+      expect(capturedKeys.length).toBe(1);
+      expect(capturedKeys[0]).toBe("cache/prefix/abc123/meta.json");
+    });
+
+    it("should prepend prefix to exists keys", async () => {
+      let capturedKeys: string[] = [];
+      const mockClient = {
+        send: async (command: any) => {
+          if (command.constructor.name === "HeadObjectCommand") {
+            capturedKeys.push(command.input.Key);
+          }
+          return { ContentLength: 100 };
+        }
+      };
+      
+      const s3Ops = createS3CacheOps(mockClient as any, "bucket", "prefix");
+      await s3Ops.exists("hash/meta.json");
+      
+      expect(capturedKeys.length).toBe(1);
+      expect(capturedKeys[0]).toBe("prefix/hash/meta.json");
+    });
   });
 
   describe("hasS3Cache", () => {
@@ -620,6 +682,88 @@ describe("Cache Operations", () => {
       expect(localCache).not.toBeNull();
       expect(localCache!.raw).toBe("# Raw");
       expect(localCache!.clean).toBe("# Clean");
+    });
+  });
+
+  describe("syncLocalToS3", () => {
+    it("should return false when local cache does not exist", async () => {
+      const mockS3 = new MockS3CacheOps();
+      
+      const result = await syncLocalToS3(mockS3, "https://example.com/new", testCacheDir);
+      expect(result).toBe(false);
+    });
+
+    it("should upload local cache to S3", async () => {
+      const mockS3 = new MockS3CacheOps();
+      const url = "https://example.com/test";
+      const hash = generateUrlHash(url);
+      
+      // Create local cache first
+      saveLocalCache(url, testCacheDir, {
+        raw: "# Local Raw",
+        clean: "# Local Clean",
+        summary: "# Local Summary"
+      });
+      
+      const result = await syncLocalToS3(mockS3, url, testCacheDir);
+      
+      expect(result).toBe(true);
+      
+      // Verify S3 has the uploaded data
+      expect(await mockS3.download(`${hash}/raw.md`)).toBe("# Local Raw");
+      expect(await mockS3.download(`${hash}/clean.md`)).toBe("# Local Clean");
+      expect(await mockS3.download(`${hash}/summary.md`)).toBe("# Local Summary");
+      
+      // Verify meta.json was uploaded
+      const metaJson = await mockS3.download(`${hash}/meta.json`);
+      expect(metaJson).not.toBeNull();
+      const meta = JSON.parse(metaJson!);
+      expect(meta.url).toBe(url);
+      expect(meta.crawlMode).toBe("summary");
+    });
+
+    it("should only upload files that exist locally", async () => {
+      const mockS3 = new MockS3CacheOps();
+      const url = "https://example.com/partial";
+      const hash = generateUrlHash(url);
+      
+      // Create local cache with only raw
+      saveLocalCache(url, testCacheDir, { raw: "# Raw Only" });
+      
+      const result = await syncLocalToS3(mockS3, url, testCacheDir);
+      
+      expect(result).toBe(true);
+      expect(await mockS3.download(`${hash}/raw.md`)).toBe("# Raw Only");
+      // clean and summary should not exist in S3
+      expect(await mockS3.download(`${hash}/clean.md`)).toBeNull();
+      expect(await mockS3.download(`${hash}/summary.md`)).toBeNull();
+    });
+
+    it("should preserve content when syncing partial update", async () => {
+      const mockS3 = new MockS3CacheOps();
+      const url = "https://example.com/preserve";
+      const hash = generateUrlHash(url);
+      
+      // First sync: upload raw and clean
+      saveLocalCache(url, testCacheDir, {
+        raw: "# Raw",
+        clean: "# Clean"
+      });
+      await syncLocalToS3(mockS3, url, testCacheDir);
+      
+      // Second sync: upload only summary (simulating partial update)
+      const existing = getLocalCache(url, testCacheDir)!;
+      saveLocalCache(url, testCacheDir, {
+        raw: existing.raw!,
+        clean: existing.clean!,
+        summary: "# New Summary"
+      });
+      await syncLocalToS3(mockS3, url, testCacheDir);
+      
+      // All three files should exist
+      expect(await mockS3.download(`${hash}/raw.md`)).toBe("# Raw");
+      expect(await mockS3.download(`${hash}/clean.md`)).toBe("# Clean");
+      expect(await mockS3.download(`${hash}/summary.md`)).toBe("# New Summary");
     });
   });
 
