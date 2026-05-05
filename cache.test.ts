@@ -201,8 +201,7 @@ describe("Cache Operations (per-level)", () => {
       });
 
       it("should return true when level json exists", async () => {
-        const hash = generateUrlHash("https://example.com");
-        mockS3.setData(`${hash}/raw.json`, JSON.stringify({ url: "https://example.com", uploadedAt: "2024-01-01T00:00:00Z" }));
+        mockS3.setData("raw.json", JSON.stringify({ url: "https://example.com", uploadedAt: "2024-01-01T00:00:00Z" }));
         expect(await hasS3CacheLevel(mockS3, "https://example.com", "raw")).toBe(true);
       });
     });
@@ -214,9 +213,8 @@ describe("Cache Operations (per-level)", () => {
 
       it("should return content and meta", async () => {
         const url = "https://example.com";
-        const hash = generateUrlHash(url);
-        mockS3.setData(`${hash}/raw.json`, JSON.stringify({ url, uploadedAt: "2024-01-01T00:00:00Z" }));
-        mockS3.setData(`${hash}/raw.md`, "# raw content");
+        mockS3.setData("raw.json", JSON.stringify({ url, uploadedAt: "2024-01-01T00:00:00Z" }));
+        mockS3.setData("raw.md", "# raw content");
 
         const result = await getS3CacheLevel(mockS3, url, "raw");
         expect(result).not.toBeNull();
@@ -225,8 +223,7 @@ describe("Cache Operations (per-level)", () => {
       });
 
       it("should return null when md is missing", async () => {
-        const hash = generateUrlHash("https://example.com");
-        mockS3.setData(`${hash}/raw.json`, JSON.stringify({ url: "https://example.com", uploadedAt: "2024-01-01T00:00:00Z" }));
+        mockS3.setData("raw.json", JSON.stringify({ url: "https://example.com", uploadedAt: "2024-01-01T00:00:00Z" }));
         // no md file
         expect(await getS3CacheLevel(mockS3, "https://example.com", "raw")).toBeNull();
       });
@@ -235,18 +232,16 @@ describe("Cache Operations (per-level)", () => {
     describe("saveS3CacheLevel", () => {
       it("should upload json and md", async () => {
         const url = "https://example.com";
-        const hash = generateUrlHash(url);
         const ok = await saveS3CacheLevel(mockS3, url, "raw", "# raw");
         expect(ok).toBe(true);
-        expect(mockS3.storage.has(`${hash}/raw.json`)).toBe(true);
-        expect(mockS3.storage.get(`${hash}/raw.md`)).toBe("# raw");
+        expect(mockS3.storage.has("raw.json")).toBe(true);
+        expect(mockS3.storage.get("raw.md")).toBe("# raw");
       });
 
       it("should store correct metadata", async () => {
         const url = "https://example.com";
-        const hash = generateUrlHash(url);
         await saveS3CacheLevel(mockS3, url, "clean", "# clean");
-        const metaJson = mockS3.storage.get(`${hash}/clean.json`)!;
+        const metaJson = mockS3.storage.get("clean.json")!;
         const meta = JSON.parse(metaJson);
         expect(meta.url).toBe(url);
         expect(meta.uploadedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);

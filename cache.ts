@@ -175,11 +175,11 @@ export function createS3CacheOps(
  */
 export async function hasS3CacheLevel(
   s3Ops: S3CacheOperations,
-  url: string,
+  _url: string,
   level: CrawlMode
 ): Promise<boolean> {
-  const hash = generateUrlHash(url);
-  return await s3Ops.exists(`${hash}/${level}.json`);
+  // s3Ops 已经以 hash 为 prefix，这里只需传 level 文件名
+  return await s3Ops.exists(`${level}.json`);
 }
 
 /**
@@ -188,15 +188,14 @@ export async function hasS3CacheLevel(
  */
 export async function getS3CacheLevel(
   s3Ops: S3CacheOperations,
-  url: string,
+  _url: string,
   level: CrawlMode
 ): Promise<{ content: string; meta: CacheLevelMeta } | null> {
-  const hash = generateUrlHash(url);
-
-  const jsonContent = await s3Ops.download(`${hash}/${level}.json`);
+  // s3Ops 已经以 hash 为 prefix，这里只需传 level 文件名
+  const jsonContent = await s3Ops.download(`${level}.json`);
   if (!jsonContent) return null;
 
-  const mdContent = await s3Ops.download(`${hash}/${level}.md`);
+  const mdContent = await s3Ops.download(`${level}.md`);
   if (!mdContent) return null;
 
   try {
@@ -217,16 +216,16 @@ export async function saveS3CacheLevel(
   level: CrawlMode,
   content: string
 ): Promise<boolean> {
-  const hash = generateUrlHash(url);
   const meta: CacheLevelMeta = {
     url,
     uploadedAt: new Date().toISOString(),
   };
 
-  const jsonOk = await s3Ops.upload(`${hash}/${level}.json`, JSON.stringify(meta));
+  // s3Ops 已经以 hash 为 prefix，这里只需传 level 文件名
+  const jsonOk = await s3Ops.upload(`${level}.json`, JSON.stringify(meta));
   if (!jsonOk) return false;
 
-  const mdOk = await s3Ops.upload(`${hash}/${level}.md`, content);
+  const mdOk = await s3Ops.upload(`${level}.md`, content);
   return mdOk;
 }
 
