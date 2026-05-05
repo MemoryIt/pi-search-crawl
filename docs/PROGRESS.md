@@ -191,6 +191,50 @@ ensureLevel("summary") → 本地 → S3(remoteCache=true) → callSummaryLLM
 | 2026-05-04 | 下载云端 docs 目录到本地 | ✅ 通过 |
 | 2026-05-05 | 本地缓存保存（raw.md + raw.json） | ✅ 通过 |
 | 2026-05-05 | S3 双层目录 Bug 修复验证 | ✅ 通过 |
+| 2026-05-05 | 多 mode（raw/clean/summary）抓取不同 URL，本地+S3 缓存 | ✅ 通过 |
+| 2026-05-05 | crawl mode=raw 限制下请求 clean 模式 | ✅ 降级为 raw |
+| 2026-05-05 | 删除本地缓存后从 S3 恢复 | ✅ 通过 |
+| 2026-05-05 | 部分缓存命中（raw 已有，clean 需生成） | ✅ 通过 |
+| 2026-05-05 | S3 不可达，errorMode=graceful | ✅ 跳过 S3，仅用本地 |
+| 2026-05-05 | S3 不可达，errorMode=strict | ✅ 加载时报错退出 |
+
+---
+
+### v0.2.2 工具精简与健康检查
+
+**状态:** ✅ 已完成
+
+**完成日期:** 2026-05-05
+
+#### 提交记录
+
+| 提交 | 描述 |
+|------|------|
+| `7305234` | refactor: simplify fetch_web_page parameters, remove f and extract_instruction |
+| `46e76c2` | fix: add S3 health check before client creation to prevent hang on unreachable storage |
+
+#### 实现内容
+
+- **index.ts**: 精简 fetch_web_page 参数
+  - 移除 `f` 参数 — 恒为 `"fit"`，与 `mode` 语义重复
+  - 移除 `extract_instruction` 参数 — execute 从未消费
+  - 清理死函数 `formatFetchResult()`
+  - `callCrawl4AI()` 内部硬编码 `f: "fit"`
+
+- **s3-client.ts**: 新增健康检查
+  - `checkS3Health(endpoint, timeoutMs)` — 调用 RustFS `/health` 端点，AbortController 5s 超时
+  - 任何异常（DNS、连接拒绝、超时）返回 `false`
+
+- **index.ts**: S3 初始化改为先探活
+  - 扩展入口改为 `async function`
+  - 仅 `remoteCache=true` 时执行健康检查
+  - healthy → 创建 S3Client，`s3Available=true`
+  - unhealthy + strict → 加载时抛错
+  - unhealthy + graceful → 打印警告，`s3Available=false`，跳过所有 S3 操作
+
+#### 问题修复
+
+修复前 `createS3Client()` 只构造对象不验证连通性，导致 S3 不可达时请求无限阻塞。修复后最多 5s 即可判定不可达。
 
 ---
 
@@ -205,5 +249,5 @@ ensureLevel("summary") → 本地 → S3(remoteCache=true) → callSummaryLLM
 ### 集成测试
 
 - [ ] 端到端测试（SearXNG + Crawl4AI + S3 + LLM）
-- [ ] S3 remoteCache=true 实际连通性测试
-- [ ] errorMode strict/graceful 行为验证
+- [x] S3 remoteCache=true 实际连通性测试（健康检查已覆盖）
+- [x] errorMode strict/graceful 行为验证（S3 场景已验证，LLM 场景待 LLM 接入后验证）
